@@ -1,6 +1,8 @@
 // =============================================================
 //  多看隐藏Tab插件 — 双模式支持（新版/旧版）
-//  三指长按弹出菜单，无痕隐藏
+//  三指长按（基于 UIApplication sendEvent:）
+//  旧版：彻底移除 TabBar（removeFromSuperview）
+//  新版：隐藏+移出屏幕
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -57,12 +59,11 @@ static void DKRemoveNavEarnBeans(UIViewController *vc) {
     vc.navigationItem.rightBarButtonItems = newItems;
 }
 
-// 新版隐藏：彻底移除 TabBar 视图（移出屏幕 + 隐藏）
+// 新版隐藏：移出屏幕 + 隐藏
 static void DKHideTabBarNew(UIView *rootView) {
     if (!rootView) return;
     if ([NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForPhone"] ||
         [NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForIPhone"]) {
-        // 彻底移出屏幕并隐藏
         CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
         CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
         [UIView performWithoutAnimation:^{
@@ -79,39 +80,28 @@ static void DKHideTabBarNew(UIView *rootView) {
 }
 
 // ---------- 旧版模式（5.6.9）逻辑 ----------
-// 旧版彻底移除 TabBar（移出屏幕 + 隐藏 + 调整父视图）
-static void DKHideTabBarOld(UIView *rootView) {
+// 彻底移除 TabBar（removeFromSuperview）并调整容器布局
+static void DKRemoveTabBarAndResize(UIView *rootView) {
     if (!rootView) return;
+    // 递归查找 DKTabBarForIPhone
     if ([NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForIPhone"]) {
-        [UIView performWithoutAnimation:^{
-            CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-            CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-            // 将自身移出屏幕底部，高度设为0
-            rootView.frame = CGRectMake(0, screenHeight, screenWidth, 0);
-            rootView.hidden = YES;
-            rootView.alpha = 0.0;
-            // 清除背景色
-            rootView.backgroundColor = [UIColor clearColor];
-            // 如果有父视图，调整父视图高度，彻底消除底部空白
-            if (rootView.superview) {
-                UIView *parent = rootView.superview;
-                // 如果父视图是容器，且高度包含 tab 栏高度，则调整父视图高度
-                CGRect parentFrame = parent.frame;
-                // 假设 tab 栏高度通常为 49 或 83（含安全区）
-                // 我们可以将父视图高度设置为屏幕高度，或减去 tab 栏高度
-                // 但更安全的是将父视图高度设为屏幕高度
-                if (parentFrame.size.height > 0) {
-                    parentFrame.size.height = screenHeight;
-                    parent.frame = parentFrame;
-                }
-                // 同时确保父视图裁剪子视图
-                parent.clipsToBounds = YES;
+        UIView *parent = rootView.superview;
+        // 移除 TabBar
+        [rootView removeFromSuperview];
+        NSLog(@"[DuokanHide] 已移除 DKTabBarForIPhone");
+        // 调整父视图的子视图布局，填充整个父视图
+        if (parent) {
+            for (UIView *sub in parent.subviews) {
+                sub.frame = parent.bounds;
+                sub.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
             }
-        }];
+            [parent setNeedsLayout];
+            [parent layoutIfNeeded];
+        }
         return;
     }
     for (UIView *sub in rootView.subviews) {
-        DKHideTabBarOld(sub);
+        DKRemoveTabBarAndResize(sub);
     }
 }
 
@@ -120,11 +110,13 @@ static void DKPerformHide(UIViewController *vc) {
     if (!vc) return;
     NSInteger mode = DKGetMode();
     if (mode == 0) return;
-    // 禁用动画，防止闪现
+    
     [UIView performWithoutAnimation:^{
         if (mode == 1) {
-            DKHideTabBarOld(vc.view);
+            // 旧版：彻底移除
+            DKRemoveTabBarAndResize(vc.view);
         } else if (mode == 2) {
+            // 新版：隐藏+移出屏幕
             DKHideTabBarNew(vc.view);
             DKRemoveEarnBeansFromView(vc.view);
             DKRemoveNavEarnBeans(vc);
@@ -257,17 +249,16 @@ static NSInteger touchCount = 0;
 // =============================================================
 %hook UIViewController
 
-// 在 viewDidLoad 中执行，更早隐藏
+// 在 viewDidLoad 中立即执行
 - (void)viewDidLoad {
     %orig;
     if (!DKShouldApply()) return;
     if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
-        // 立即执行，无延迟
         DKPerformHide(self);
     }
 }
 
-// 在 viewWillAppear 中再次确保隐藏（应对动态重建）
+// 在 viewWillAppear 中再次执行（应对可能的动态重建）
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     if (!DKShouldApply()) return;
@@ -276,7 +267,7 @@ static NSInteger touchCount = 0;
     }
 }
 
-// 在布局完成后再次修正（应对旋转等）
+// 布局完成后再次修正（旋转等场景）
 - (void)viewDidLayoutSubviews {
     %orig;
     if (!DKShouldApply()) return;
