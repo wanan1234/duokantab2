@@ -1,6 +1,6 @@
 // =============================================================
 //  多看隐藏Tab插件 — 双模式支持（新版/旧版）
-//  双指长按（基于 UIApplication sendEvent:，不会被拦截）
+//  三指长按（基于 UIApplication sendEvent:，不会被拦截）
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -168,7 +168,7 @@ static void showSettingsMenu(UIWindow *window) {
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
-// 检测双指长按的全局变量
+// 检测三指长按的全局变量
 static NSTimeInterval touchStartTime = 0;
 static BOOL isTouching = NO;
 static NSInteger touchCount = 0;
@@ -189,7 +189,7 @@ static NSInteger touchCount = 0;
     UITouch *touch = [touches anyObject];
     if (touch.phase == UITouchPhaseBegan) {
         touchCount = touches.count;
-        if (touchCount == 2) {
+        if (touchCount == 3) {
             isTouching = YES;
             touchStartTime = [NSDate timeIntervalSinceReferenceDate];
         }
@@ -197,7 +197,7 @@ static NSInteger touchCount = 0;
         isTouching = NO;
         touchCount = 0;
     } else if (touch.phase == UITouchPhaseStationary) {
-        if (isTouching && touchCount == 2) {
+        if (isTouching && touchCount == 3) {
             NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
             if (now - touchStartTime > 1.2) {
                 UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
