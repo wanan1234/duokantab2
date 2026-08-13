@@ -7,6 +7,8 @@
         <key>Bundles</key>
         <array>
             <string>com.duokan.reader</string>
+            <!-- 如果有多看不同版本使用不同 Bundle ID，可以添加多个 -->
+            <!-- <string>com.dragon.read</string> 番茄小说，不是多看，仅作示例 -->
         </array>
     </dict>
 </dict>
