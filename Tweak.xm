@@ -1,12 +1,11 @@
 // =============================================================
 //  多看隐藏Tab插件 — 双模式支持（新版/旧版）
-//  三指长按弹出菜单选择模式，切换需重启
+//  双指长按（基于 UIApplication sendEvent:，不会被拦截）
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
 // ---------- 模式管理 ----------
-// 模式：0=关闭，1=旧版模式（5.6.9），2=新版模式（5.8.7）
 static NSInteger DKGetMode() {
     return [[NSUserDefaults standardUserDefaults] integerForKey:@"DuokanHideTabMode"];
 }
@@ -60,13 +59,11 @@ static void DKRemoveNavEarnBeans(UIViewController *vc) {
 
 static void DKHideTabBarNew(UIView *rootView) {
     if (!rootView) return;
-    // 查找新版类名
     if ([NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForPhone"] ||
         [NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForIPhone"]) {
         rootView.hidden = YES;
         rootView.alpha = 0.0;
         rootView.backgroundColor = [UIColor clearColor];
-        NSLog(@"[DuokanTab] 新版模式：隐藏 TabBar");
         return;
     }
     for (UIView *sub in rootView.subviews) {
@@ -80,7 +77,6 @@ static void DKHideTabBarOld(UIView *rootView) {
     if ([NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForIPhone"]) {
         rootView.hidden = YES;
         rootView.alpha = 0.0;
-        NSLog(@"[DuokanTab] 旧版模式：隐藏 DKTabBarForIPhone");
         return;
     }
     for (UIView *sub in rootView.subviews) {
@@ -103,7 +99,7 @@ static void DKPerformHide(UIViewController *vc) {
 }
 
 // =============================================================
-//  手势控制：三指长按弹出菜单
+// 手势检测（基于 UIApplication sendEvent:）
 // =============================================================
 
 static void showToast(NSString *msg, UIWindow *window) {
@@ -146,7 +142,6 @@ static void showSettingsMenu(UIWindow *window) {
                                                         showToast(@"已是当前模式", window);
                                                         return;
                                                     }
-                                                    // 提示需要重启
                                                     UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"提示"
                                                                                                                            message:@"切换模式后需要重启 App 才能生效，确定要继续吗？"
                                                                                                                     preferredStyle:UIAlertControllerStyleAlert];
@@ -155,7 +150,6 @@ static void showSettingsMenu(UIWindow *window) {
                                                         showToast([NSString stringWithFormat:@"已切换至：%@，请重启 App", titles[targetMode]], window);
                                                     }]];
                                                     [confirmAlert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-                                                    
                                                     UIViewController *top = window.rootViewController;
                                                     while (top.presentedViewController) {
                                                         top = top.presentedViewController;
@@ -174,41 +168,58 @@ static void showSettingsMenu(UIWindow *window) {
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
-// =============================================================
-//  Hook UIWindow：三指长按
-// =============================================================
-%hook UIWindow
+// 检测双指长按的全局变量
+static NSTimeInterval touchStartTime = 0;
+static BOOL isTouching = NO;
+static NSInteger touchCount = 0;
 
-- (instancetype)initWithFrame:(CGRect)frame {
-    self = %orig;
-    if (self) {
-        UILongPressGestureRecognizer *gesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(dk_handleLongPress:)];
-        gesture.numberOfTouchesRequired = 3;
-        gesture.minimumPressDuration = 1.2;
-        gesture.allowableMovement = 30;
-        gesture.cancelsTouchesInView = NO;
-        [self addGestureRecognizer:gesture];
-        NSLog(@"[DuokanTab] 三指长按手势已添加");
-    }
-    return self;
-}
+// =============================================================
+// Hook UIApplication 的 sendEvent: 来检测触摸事件
+// =============================================================
+%hook UIApplication
 
-%new
-- (void)dk_handleLongPress:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateBegan) return;
-    // 触觉反馈
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-        [generator prepare];
-        [generator impactOccurred];
+- (void)sendEvent:(UIEvent *)event {
+    %orig;
+    
+    if (event.type != UIEventTypeTouches) return;
+    
+    NSSet *touches = [event allTouches];
+    if (touches.count == 0) return;
+    
+    UITouch *touch = [touches anyObject];
+    if (touch.phase == UITouchPhaseBegan) {
+        touchCount = touches.count;
+        if (touchCount == 2) {
+            isTouching = YES;
+            touchStartTime = [NSDate timeIntervalSinceReferenceDate];
+        }
+    } else if (touch.phase == UITouchPhaseEnded || touch.phase == UITouchPhaseCancelled) {
+        isTouching = NO;
+        touchCount = 0;
+    } else if (touch.phase == UITouchPhaseStationary) {
+        if (isTouching && touchCount == 2) {
+            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+            if (now - touchStartTime > 1.2) {
+                UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+                if (keyWindow) {
+                    if (@available(iOS 10.0, *)) {
+                        UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+                        [generator prepare];
+                        [generator impactOccurred];
+                    }
+                    showSettingsMenu(keyWindow);
+                }
+                isTouching = NO;
+                touchCount = 0;
+            }
+        }
     }
-    showSettingsMenu(self);
 }
 
 %end
 
 // =============================================================
-//  Hook UIViewController：执行隐藏
+// Hook UIViewController
 // =============================================================
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
@@ -217,7 +228,6 @@ static void showSettingsMenu(UIWindow *window) {
     if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // 延迟执行确保视图完全加载
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 BOOL animationsEnabled = [UIView areAnimationsEnabled];
                 [UIView setAnimationsEnabled:NO];
@@ -230,12 +240,11 @@ static void showSettingsMenu(UIWindow *window) {
 %end
 
 // =============================================================
-//  构造函数：初始化默认模式（默认关闭）
+// 构造函数
 // =============================================================
 %ctor {
-    // 如果没有设置过，默认设为关闭（0）
     if (![[NSUserDefaults standardUserDefaults] objectForKey:@"DuokanHideTabMode"]) {
         DKSetMode(0);
     }
-    NSLog(@"[DuokanTab] 插件加载完成，当前模式：%ld", (long)DKGetMode());
+    NSLog(@"[DuokanHide] 插件加载完成，当前模式：%ld", (long)DKGetMode());
 }
