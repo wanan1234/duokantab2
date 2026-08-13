@@ -1,5 +1,6 @@
 // =============================================================
-//  多看隐藏Tab插件 — 无痕版（解决闪烁和封面加载慢）
+//  多看隐藏Tab插件 — 修复切换无效 + 无闪烁
+//  三指长按弹出菜单，模式切换需重启
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -9,8 +10,8 @@ static BOOL DKShouldApply() {
     return bid && [bid containsString:@"duokan"];
 }
 
-// 移除 TabBar 并调整布局（仅针对控制器视图层级）
-static void DKRemoveTabBarAndResize(UIView *rootView) {
+// ---------- 旧版（5.6.9）：彻底移除 TabBar ----------
+static void DKRemoveTabBarOld(UIView *rootView) {
     if (!rootView) return;
     // 递归查找 DKTabBarForIPhone
     NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
@@ -29,15 +30,15 @@ static void DKRemoveTabBarAndResize(UIView *rootView) {
         }
     }
     if (!tabBar) {
-        NSLog(@"[DuokanHide] 未找到 DKTabBarForIPhone");
+        NSLog(@"[DuokanHide] 旧版：未找到 DKTabBarForIPhone");
         return;
     }
     
-    // 移除 TabBar
+    // 无动画移除并调整布局
     [UIView performWithoutAnimation:^{
         [tabBar removeFromSuperview];
-        // 调整父视图剩余子视图填满
         if (parent) {
+            // 调整所有子视图填满父视图
             for (UIView *sub in parent.subviews) {
                 sub.frame = parent.bounds;
                 sub.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -46,21 +47,81 @@ static void DKRemoveTabBarAndResize(UIView *rootView) {
             [parent layoutIfNeeded];
         }
     }];
-    NSLog(@"[DuokanHide] 已移除 TabBar 并调整布局");
+    NSLog(@"[DuokanHide] 旧版：已移除 TabBar");
 }
 
-// 统一执行（确保只执行一次）
-static void DKPerformRemoval(UIViewController *vc) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        if (!vc || !vc.view) return;
-        // 确保在主线程，且无动画
-        dispatch_async(dispatch_get_main_queue(), ^{
+// ---------- 新版（5.8.7）：隐藏 TabBar + 移除赚书豆 ----------
+static void DKRemoveEarnBeansFromView(UIView *view) {
+    if (!view) return;
+    if ([NSStringFromClass([view class]) isEqualToString:@"DuokanReader.HorizonalLayoutButton"]) {
+        __block BOOL hasEarnBeans = NO;
+        for (UIView *sub in view.subviews) {
+            if ([sub isKindOfClass:[UILabel class]]) {
+                UILabel *label = (UILabel *)sub;
+                if ([label.text isEqualToString:@"赚书豆"]) {
+                    hasEarnBeans = YES;
+                    break;
+                }
+            }
+        }
+        if (hasEarnBeans) {
+            view.hidden = YES;
+            view.alpha = 0.0;
+            view.userInteractionEnabled = NO;
+            return;
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        DKRemoveEarnBeansFromView(sub);
+    }
+}
+
+static void DKRemoveNavEarnBeans(UIViewController *vc) {
+    if (!vc || !vc.navigationItem.rightBarButtonItems) return;
+    NSMutableArray *newItems = [NSMutableArray array];
+    for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
+        if (![item.title isEqualToString:@"赚书豆"]) {
+            [newItems addObject:item];
+        }
+    }
+    vc.navigationItem.rightBarButtonItems = newItems;
+}
+
+static void DKHideTabBarNew(UIView *rootView) {
+    if (!rootView) return;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+    while (queue.count > 0) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if ([NSStringFromClass([view class]) isEqualToString:@"DKTabBarForPhone"] ||
+            [NSStringFromClass([view class]) isEqualToString:@"DKTabBarForIPhone"]) {
             [UIView performWithoutAnimation:^{
-                DKRemoveTabBarAndResize(vc.view);
+                view.hidden = YES;
+                view.alpha = 0.0;
+                view.backgroundColor = [UIColor clearColor];
             }];
-        });
-    });
+        }
+        for (UIView *sub in view.subviews) {
+            [queue addObject:sub];
+        }
+    }
+}
+
+// ---------- 统一执行（根据模式） ----------
+static void DKPerformHide(UIViewController *vc) {
+    if (!vc || !vc.view) return;
+    NSInteger mode = [[NSUserDefaults standardUserDefaults] integerForKey:@"DuokanHideTabMode"];
+    if (mode == 0) return;
+    
+    [UIView performWithoutAnimation:^{
+        if (mode == 1) {
+            DKRemoveTabBarOld(vc.view);
+        } else if (mode == 2) {
+            DKHideTabBarNew(vc.view);
+            DKRemoveEarnBeansFromView(vc.view);
+            DKRemoveNavEarnBeans(vc);
+        }
+    }];
 }
 
 // =============================================================
@@ -118,7 +179,7 @@ static void showSettingsMenu(UIWindow *window) {
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
-// 三指长按检测
+// 三指长按检测（基于 sendEvent:）
 static NSTimeInterval touchStartTime = 0;
 static BOOL isTouching = NO;
 static NSInteger touchCount = 0;
@@ -160,18 +221,44 @@ static NSInteger touchCount = 0;
 }
 %end
 
-// Hook 主控制器
+// =============================================================
+// Hook 主控制器 — 在 viewDidLoad 和 viewWillAppear 中执行，但只执行一次（除非模式变化）
+// =============================================================
 %hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
+
+- (void)viewDidLoad {
     %orig;
     if (!DKShouldApply()) return;
     if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
-        // 只执行一次移除
-        DKPerformRemoval(self);
+        // 尽早执行一次
+        NSInteger mode = [[NSUserDefaults standardUserDefaults] integerForKey:@"DuokanHideTabMode"];
+        if (mode != 0) {
+            DKPerformHide(self);
+        }
     }
 }
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (!DKShouldApply()) return;
+    if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
+        // 每次出现都检查模式并执行，但只执行一次（通过静态变量记录已执行的模式）
+        static NSInteger lastMode = -1;
+        NSInteger currentMode = [[NSUserDefaults standardUserDefaults] integerForKey:@"DuokanHideTabMode"];
+        if (currentMode != lastMode) {
+            lastMode = currentMode;
+            if (currentMode != 0) {
+                DKPerformHide(self);
+            }
+        }
+    }
+}
+
 %end
 
+// =============================================================
+// 构造函数
+// =============================================================
 %ctor {
     if (![[NSUserDefaults standardUserDefaults] objectForKey:@"DuokanHideTabMode"]) {
         [[NSUserDefaults standardUserDefaults] setInteger:0 forKey:@"DuokanHideTabMode"];
