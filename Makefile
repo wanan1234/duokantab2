@@ -2,7 +2,7 @@ ARCHS = arm64 arm64e
 TARGET = iphone:clang:latest:14.0
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = DuokanTab587
+TWEAK_NAME = DuokanTabnew
 DuokanTab587_FILES = Tweak.xm
 DuokanTab587_CFLAGS = -fobjc-arc -Wno-error
 
