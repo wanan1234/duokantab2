@@ -55,7 +55,7 @@ static void DKHideTabBar(UIViewController *vc) {
             sub.hidden = YES;
             sub.alpha = 0.0;
             sub.backgroundColor = [UIColor clearColor];
-            NSLog(@"[DuokanTab587] TabBar 已隐藏");
+            NSLog(@"[DuokanTabNew] TabBar 已隐藏");
             break;
         }
     }
@@ -84,6 +84,6 @@ static void DKHideTabBar(UIViewController *vc) {
 
 %ctor {
     if (DKShouldApply()) {
-        NSLog(@"[DuokanTab587] 最终稳定版加载成功");
+        NSLog(@"[DuokanTabNew] 最终稳定版加载成功");
     }
 }
