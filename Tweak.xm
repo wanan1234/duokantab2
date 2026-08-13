@@ -1,6 +1,6 @@
 // =============================================================
 //  多看隐藏Tab插件 — 双模式支持（新版/旧版）
-//  三指长按（基于 UIApplication sendEvent:，不会被拦截）
+//  三指长按弹出菜单，无痕隐藏
 // =============================================================
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -57,13 +57,20 @@ static void DKRemoveNavEarnBeans(UIViewController *vc) {
     vc.navigationItem.rightBarButtonItems = newItems;
 }
 
+// 新版隐藏：彻底移除 TabBar 视图（移出屏幕 + 隐藏）
 static void DKHideTabBarNew(UIView *rootView) {
     if (!rootView) return;
     if ([NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForPhone"] ||
         [NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForIPhone"]) {
-        rootView.hidden = YES;
-        rootView.alpha = 0.0;
-        rootView.backgroundColor = [UIColor clearColor];
+        // 彻底移出屏幕并隐藏
+        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+        [UIView performWithoutAnimation:^{
+            rootView.frame = CGRectMake(0, screenHeight, screenWidth, 0);
+            rootView.hidden = YES;
+            rootView.alpha = 0.0;
+            rootView.backgroundColor = [UIColor clearColor];
+        }];
         return;
     }
     for (UIView *sub in rootView.subviews) {
@@ -72,11 +79,35 @@ static void DKHideTabBarNew(UIView *rootView) {
 }
 
 // ---------- 旧版模式（5.6.9）逻辑 ----------
+// 旧版彻底移除 TabBar（移出屏幕 + 隐藏 + 调整父视图）
 static void DKHideTabBarOld(UIView *rootView) {
     if (!rootView) return;
     if ([NSStringFromClass([rootView class]) isEqualToString:@"DKTabBarForIPhone"]) {
-        rootView.hidden = YES;
-        rootView.alpha = 0.0;
+        [UIView performWithoutAnimation:^{
+            CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+            CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+            // 将自身移出屏幕底部，高度设为0
+            rootView.frame = CGRectMake(0, screenHeight, screenWidth, 0);
+            rootView.hidden = YES;
+            rootView.alpha = 0.0;
+            // 清除背景色
+            rootView.backgroundColor = [UIColor clearColor];
+            // 如果有父视图，调整父视图高度，彻底消除底部空白
+            if (rootView.superview) {
+                UIView *parent = rootView.superview;
+                // 如果父视图是容器，且高度包含 tab 栏高度，则调整父视图高度
+                CGRect parentFrame = parent.frame;
+                // 假设 tab 栏高度通常为 49 或 83（含安全区）
+                // 我们可以将父视图高度设置为屏幕高度，或减去 tab 栏高度
+                // 但更安全的是将父视图高度设为屏幕高度
+                if (parentFrame.size.height > 0) {
+                    parentFrame.size.height = screenHeight;
+                    parent.frame = parentFrame;
+                }
+                // 同时确保父视图裁剪子视图
+                parent.clipsToBounds = YES;
+            }
+        }];
         return;
     }
     for (UIView *sub in rootView.subviews) {
@@ -89,17 +120,20 @@ static void DKPerformHide(UIViewController *vc) {
     if (!vc) return;
     NSInteger mode = DKGetMode();
     if (mode == 0) return;
-    if (mode == 1) {
-        DKHideTabBarOld(vc.view);
-    } else if (mode == 2) {
-        DKHideTabBarNew(vc.view);
-        DKRemoveEarnBeansFromView(vc.view);
-        DKRemoveNavEarnBeans(vc);
-    }
+    // 禁用动画，防止闪现
+    [UIView performWithoutAnimation:^{
+        if (mode == 1) {
+            DKHideTabBarOld(vc.view);
+        } else if (mode == 2) {
+            DKHideTabBarNew(vc.view);
+            DKRemoveEarnBeansFromView(vc.view);
+            DKRemoveNavEarnBeans(vc);
+        }
+    }];
 }
 
 // =============================================================
-// 手势检测（基于 UIApplication sendEvent:）
+// 手势检测（基于 UIApplication sendEvent:，三指长按）
 // =============================================================
 
 static void showToast(NSString *msg, UIWindow *window) {
@@ -219,24 +253,38 @@ static NSInteger touchCount = 0;
 %end
 
 // =============================================================
-// Hook UIViewController
+// Hook UIViewController — 实现无痕隐藏
 // =============================================================
 %hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
+
+// 在 viewDidLoad 中执行，更早隐藏
+- (void)viewDidLoad {
     %orig;
     if (!DKShouldApply()) return;
     if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                BOOL animationsEnabled = [UIView areAnimationsEnabled];
-                [UIView setAnimationsEnabled:NO];
-                DKPerformHide(self);
-                [UIView setAnimationsEnabled:animationsEnabled];
-            });
-        });
+        // 立即执行，无延迟
+        DKPerformHide(self);
     }
 }
+
+// 在 viewWillAppear 中再次确保隐藏（应对动态重建）
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (!DKShouldApply()) return;
+    if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
+        DKPerformHide(self);
+    }
+}
+
+// 在布局完成后再次修正（应对旋转等）
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (!DKShouldApply()) return;
+    if ([NSStringFromClass([self class]) isEqualToString:@"DKIPhoneMainTabBarViewController"]) {
+        DKPerformHide(self);
+    }
+}
+
 %end
 
 // =============================================================
